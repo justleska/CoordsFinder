@@ -32,7 +32,7 @@ namespace {
     static_assert(sizeof(SharedRotationInfo) == sizeof(RotationInfo), "shared staging layout mismatch");
 
     template <TextureAlgorithm Mode>
-    __global__ void bruteForceKernel(
+    __launch_bounds__(ThreadsX* ThreadsZ) __global__ void bruteForceKernel(
         Int3 start,
         Int3 end,
         int errorTolerance,
@@ -48,7 +48,6 @@ namespace {
         const unsigned int lane = threadIdx.x + threadIdx.z * blockDim.x;
 
         const int filterCount = deviceFilterCounts[directionIndex];
-#pragma unroll
         for (unsigned int i = lane; i < static_cast<unsigned int>(filterCount); i += threadCount) {
             const RotationInfo& src = deviceFilters[directionIndex][i];
             sharedFilters[i] = { src.x, src.y, src.z, src.rotation, src.visibleMask };
@@ -253,10 +252,28 @@ bool runHipScan(
 
     if (!allocationFailed) {
         std::fprintf(stderr, "HIP device: %s.\n", properties.name);
-        hipDeviceSetCacheConfig(hipFuncCachePreferShared);
-        // Record each event once so early synchronizations always observe a real signal.
-        for (std::size_t i = 0; i < PipelineDepth; ++i) {
-            hipEventRecord(completion[i], stream);
+        if (config.verbose) {
+            int maxActiveBlocks = 0;
+            const hipError_t occupancyResult = hipOccupancyMaxActiveBlocksPerMultiprocessor(
+                &maxActiveBlocks,
+                reinterpret_cast<const void*>(&bruteForceKernel<TextureAlgorithm::Sodium2>),
+                static_cast<int>(ThreadsX * ThreadsZ),
+                0);
+            if (occupancyResult == hipSuccess && properties.maxThreadsPerMultiProcessor > 0) {
+                const double occupancy = 100.0
+                    * static_cast<double>(maxActiveBlocks) * (ThreadsX * ThreadsZ)
+                    / properties.maxThreadsPerMultiProcessor;
+                std::fprintf(stderr,
+                    "HIP occupancy: %d block(s)/CU, %.1f%% of %d threads/CU (block = %ux%u).\n",
+                    maxActiveBlocks,
+                    occupancy,
+                    properties.maxThreadsPerMultiProcessor,
+                    ThreadsX,
+                    ThreadsZ);
+            }
+        }
+         for (std::size_t i = 0; i < PipelineDepth; ++i) {
+            (void)hipEventRecord(completion[i], stream);
         }
     }
 
@@ -316,7 +333,8 @@ bool runHipScan(
         }
         if (stagedOverflows[b]) {
             if (error) {
-                *error = "a tile produced more than 65536 matches; reduce hipTileSize or tighten the filter";
+                *error = "a tile produced more than " + std::to_string(ResultCapacity)
+                    + " matches; reduce hipTileSize or tighten the filter";
             }
             return false;
         }
@@ -385,14 +403,14 @@ bool runHipScan(
     }
     succeeded = !fatal && !invalidTile;
 
-    hipStreamSynchronize(stream);
+    (void)hipStreamSynchronize(stream);
     for (std::size_t i = 0; i < PipelineDepth; ++i) {
-        hipEventDestroy(completion[i]);
-        hipFree(deviceResults[i]);
-        hipFree(deviceResultCount[i]);
-        hipFree(deviceResultOverflow[i]);
-        hipHostFree(stagedResults[i]);
+        (void)hipEventDestroy(completion[i]);
+        (void)hipFree(deviceResults[i]);
+        (void)hipFree(deviceResultCount[i]);
+        (void)hipFree(deviceResultOverflow[i]);
+        (void)hipHostFree(stagedResults[i]);
     }
-    hipStreamDestroy(stream);
+    (void)hipStreamDestroy(stream);
     return succeeded;
 }
