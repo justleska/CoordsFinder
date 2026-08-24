@@ -53,9 +53,6 @@ if(COORDSFINDER_ENABLE_HIP)
     set_target_properties(coordsfinder PROPERTIES
         HIP_STANDARD 20
         HIP_STANDARD_REQUIRED YES)
-    if(MSVC)
-        target_compile_options(coordsfinder PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-Xcompiler=/utf-8>)
-    endif()
     target_compile_options(coordsfinder PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-Xclang -fno-cuda-host-device-constexpr>)
 endif()
 
